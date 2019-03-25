@@ -33,12 +33,15 @@ EOF
 read -r -d '' MAN <<'EOF'
 EOF
 
-#============================= CHECK_DEPENDENCIES =============================
 
 
 #============================== PARSE PARAMETERS ===============================
 # default parameters
 PLAYER="mpv"
+A_LIST_TYPE="top"
+A_ORDER="upvotes"
+A_TOP_TIME="upvotes"
+
 
 PARAMS=""
 while (( "$#" )); do
@@ -60,8 +63,24 @@ while (( "$#" )); do
           shift 2
           ;;
       --order)
-          ORDER=$2
+          A_ORDER=$2
           shift 2
+          ;;
+      --top|--new|--hot)
+          A_LIST_TYPE="${1#--*}"
+          shift
+          ;;
+      --top-*)
+          A_LIST_TYPE=top
+          A_TOP_TIME="${1#--top-}"
+          [ "$A_TOP_TIME" != "hour" ] &&
+            [ "$A_TOP_TIME" != "day" ]  &&
+            [ "$A_TOP_TIME" != "week" ]  &&
+            [ "$A_TOP_TIME" != "month" ]  &&
+            [ "$A_TOP_TIME" != "year" ]  &&
+            [ "$A_TOP_TIME" != "all" ] &&
+            { echo "Invalid option: $1" >&2; exit 1; }
+          shift
           ;;
       -p|--player)
           PLAYER=$2
@@ -100,6 +119,12 @@ done
 # set positional arguments in their proper place
 eval set -- "$PARAMS"
 
+#============================= CHECK_DEPENDENCIES =============================
+hash python &>/dev/null || { echo "'python' and 'youtube-dl' not found"; exit 1; }
+hash youtube-dl &>/dev/null || { echo "'youtube-dl' not found"; exit 1; }
+hash curl &>/dev/null || { echo "'curl' not found"; exit 1; }
+player_exec="${PLAYER% *}"
+hash "$player_exec" &>/dev/null || { echo "'$player_exec' not found"; exit 1; }
 
 #============================== SETUP VARIABLES ================================
 
@@ -229,11 +254,13 @@ parse_urls() {
 get_post_list() {
     lockfile=$(mktemp -t lock.XXXXXX)
     trap 'rm -f "$lockfile"' 0
+    local args=""
+    [ "$A_LIST_TYPE" = "top" ] && args="\"t=$A_TOP_TIME\""
     xargs_command="
     echo Scraping \"{}\" >&2
     {
         flock -x 99
-        "'get_res "{}" "top" "t=all"'"
+        get_res \"{}\" $A_LIST_TYPE $args
     } 99>$lockfile
     "
     local res
