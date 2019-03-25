@@ -1,4 +1,4 @@
-#!/bin/bash -x
+#!/bin/bash
 
 # authentication settings
 TOKENFILE=token.sh
@@ -33,7 +33,10 @@ EOF
 read -r -d '' MAN <<'EOF'
 EOF
 
-# ============ PARAMETER PARSING =============
+#============================= CHECK_DEPENDENCIES =============================
+
+
+#============================== PARSE PARAMETERS ===============================
 # default parameters
 PLAYER="mpv"
 
@@ -98,7 +101,7 @@ done
 eval set -- "$PARAMS"
 
 
-# ============ VARIABLE SETUP =============
+#============================== SETUP VARIABLES ================================
 
 declare -a subreddits
 subreddits=()
@@ -118,6 +121,7 @@ if [ -n "$SUBREDDITS" ]; then
     unset arr
 fi
 if [ -n "$CATEGORIES" ]; then
+    echo "@jq1" >&2
     names=$(< subreddits.json jq -r '.[] | 
         select(.category | inside("'"$CATEGORIES"'")) | .name')
     IFS=$'\n' arr=($names)
@@ -133,7 +137,7 @@ IPC_FILE="/tmp/mpv.fifo"
 [ -e "$IPC_FILE" ] && rm -f "$IPC_FILE"
 mkfifo "$IPC_FILE"
 
-# ============= QUERY COMMANDS ============
+#=========================== HANDLE QUERY COMMANDS =============================
 
 # commands such as --list-categories or --list-subreddits do not play anything. We implement them here
 
@@ -163,7 +167,8 @@ if [ -n "$A_LIST_SUBREDDITS" ]; then
     exit 0
 fi
 
-# ============ UTILITY FUNCTIONS ==========
+
+#============================= UTILITY FUNCTIONS ===============================
 
 req() {
     curl -s -H "$auth_string" -A "$USER_AGENT" "$URL$1" 
@@ -181,6 +186,7 @@ auth() {
             --user "$CLIENT_ID:$CLIENT_SECRET" \
             "$URL/api/v1/access_token")
 
+	echo "@jq2 - token" >&2
         token=$(echo "$tokenres" | jq -r ".access_token")
 
         echo "$token" > "$TOKENFILE"
@@ -195,11 +201,13 @@ get_res() {
     # $3 is sort type {new, top, hot}
     # $4 is query arguments appended to url 
     # stores raw urls in $got_urls and a more complete result in $got_res
+    [ -z "$1" ] && exit 1
     local subreddit="$1"
     local sort_by="$2"
     local args="$3"
     local res
     res=$(req "/r/$subreddit/${sort_by}.json?$args")
+    echo "@jq3 - get-res" >&2
     echo "$res" | jq '.data.children[]'
 }
 export -f req # for xargs
@@ -209,13 +217,15 @@ export -f get_res  # for xargs
 parse_urls() {
     local res="$1"
     local urls
+    echo "@jq4 - parse-urls" >&2
     urls=$(echo "$res" | jq -r '.[] | select(.kind == "t3" 
         and .data.is_self != true) | 
             .data.url')
     echo "$urls"
 }
 
-# ========= GET POST LIST FROM SUBREDDITS ===========
+#======================= GET POST LIST FROM SUBREDDITS =========================
+
 get_post_list() {
     lockfile=$(mktemp -t lock.XXXXXX)
     trap 'rm -f "$lockfile"' 0
@@ -231,14 +241,15 @@ get_post_list() {
     # PAR=''
     res=$(echo "$1" | xargs "$PAR" -d ' ' -I{} bash -c "$xargs_command")
 
-    # ============= PROCESS LIST ==========================
+    #============================== PROCESS LIST ===============================
+
     # order by score
+    echo "@jq5 - parse-post-list" >&2
     res=$(echo "$res" | jq '[.] | sort_by(.data.score)')
 
     echo "$res"
 }
 
-# ============== SKIP URLS BASED ON REGEX =============
 # for clean_urls and better indent consitency
 read -r -d '' PY_SOURCE <<'EOF'
 import youtube_dl
@@ -255,6 +266,7 @@ for url in sys.stdin:
             break
 EOF
 clean_urls() {
+    # remove all urls that do not conform to youtube-dl regexes
     local urls
     if [ "$A_SKIP_REGEX" = 1 ]; then
         echo "" | python -c "$PY_SOURCE"
@@ -264,10 +276,11 @@ clean_urls() {
 }
 
 get_all() {
+    # wrapper around get_post_list, parse_urls, and clean_urls
     local got_posts
     local got_urls
     local got_urls
-    got_posts=$(get_post_list "$1 ")
+    got_posts=$(get_post_list "$1")
     got_urls=$(parse_urls "$got_posts")
     got_urls=$(clean_urls "$got_urls")
     echo "$got_urls"
@@ -294,12 +307,10 @@ start_player() {
     $PLAYER $args "$1" >/dev/null 2>&1 &
 } 
 
-# got_posts=$(get_post_list "${subreddits[2]} ${subreddits[3]} ")
-
 echo "PLAYLIST FILE: $PLAYLIST_FILE"
 if [ -n "$A_FAST_LOAD" ]; then
     # first pass so we play something immediately
-    got_urls=$(get_all "${subreddits[1]} ")
+    got_urls=$(get_all "${subreddits[1]}")
     echo "$got_urls" > "$PLAYLIST_FILE"
     start_player "$PLAYLIST_FILE"
 fi
