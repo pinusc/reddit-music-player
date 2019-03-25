@@ -23,7 +23,7 @@ read -r -d '' OPTIONS <<'EOF'
 	--new	sort by new posts
 	--top	sort by top posts
 	--top-time <string>	one of "all", "week", "month", "year". Use with "--top"
-	--order <string>`	order of generated playlist: either "random" or "upvotes"
+	--order <string>`	order of generated playlist: one of "random", "upvotes", "normalized", "time"
 	-c, --categories <string>	comma-separated list of categories to source
 	--list-categories	print a list of available categories and exit
 	--list-subreddits	print a list of available subreddits and exit
@@ -265,13 +265,36 @@ get_post_list() {
 	PAR="-P20"
 	# PAR=''
 	res=$(echo "$1" | xargs "$PAR" -d ' ' -I{} bash -c "$xargs_command")
+	res=$(echo "$res" | jq '[.]')
 
 	#============================== PROCESS LIST ===============================
+	# echo "$res" > out.json
 
 	# order by score
 	echo "@jq5 - parse-post-list" >&2
-	res=$(echo "$res" | jq '[.] | sort_by(.data.score)')
-
+	case "$A_ORDER" in
+		score)
+			sort_key=".data.score"
+			;;
+		normalized)
+			# very naive implementation
+			# normalized score is upvotes/subscrivers
+			sort_key=".data.score / .data.subreddit_subscribers"
+			;;
+		random|shuffle)
+			# .data.name is a pseudo-random hash
+			# it's not quite "true" shuffle for some definitions of true
+			# but it's idempotent, so that's nice
+			sort_key=".data.name"
+			;;
+		time)
+			sort_key=".data.created"
+			;;
+	esac
+	if [ -n "$sort_key" ]; then
+		res=$(echo "$res" | jq "sort_by($sort_key)")
+	fi
+	
 	echo "$res"
 }
 
