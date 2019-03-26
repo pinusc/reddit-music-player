@@ -342,7 +342,7 @@ filter_posts() {
 	echo "$posts"
 }
 
-get_all() {
+get_posts() {
 	# wrapper around get_post_list, parse_urls, and clean_urls
 	local got_posts
 	local got_urls
@@ -350,9 +350,14 @@ get_all() {
 	got_posts=$(get_post_list "$1")
 	got_posts=$(pre_filter_posts "$got_posts")
 	got_posts=$(filter_posts "$got_posts")
-	got_urls=$(parse_urls "$got_posts")
 
-	echo "$got_urls"
+	echo "$got_posts"
+}
+
+make_playlist() {
+	echo '#EXTM3U'
+	echo "$1" | jq -r '.[] | "#EXTINF:,\(.data.title)
+		\(.data.url)"'
 }
 
 start_player() {
@@ -379,13 +384,13 @@ start_player() {
 echo "PLAYLIST FILE: $PLAYLIST_FILE"
 if [ -n "$A_FAST_LOAD" ]; then
 	# first pass so we play something immediately
-	got_urls=$(get_all "${subreddits[1]}")
-	echo "$got_urls" > "$PLAYLIST_FILE"
+	got_posts=$(get_posts "${subreddits[1]}")
+	make_playlist "$got_posts" > "$PLAYLIST_FILE"
 	start_player "$PLAYLIST_FILE"
 fi
 #now everything else
-got_urls=$(get_all "${subreddits[*]}")
-echo "$got_urls" > "$PLAYLIST_FILE"
+got_posts=$(get_posts "${subreddits[*]}")
+make_playlist "$got_posts" > "$PLAYLIST_FILE"
 echo "Done scraping"
 [ -z "$A_FAST_LOAD" ] && start_player "$PLAYLIST_FILE"
 
