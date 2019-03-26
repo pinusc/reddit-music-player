@@ -265,7 +265,7 @@ get_post_list() {
 	PAR="-P20"
 	# PAR=''
 	res=$(echo "$1" | xargs "$PAR" -d ' ' -I{} bash -c "$xargs_command")
-	res=$(echo "$res" | jq '[.]')
+	res=$(echo "$res" | jq --slurp)
 
 	#============================== PROCESS LIST ===============================
 	# echo "$res" > out.json
@@ -298,6 +298,15 @@ get_post_list() {
 	echo "$res"
 }
 
+pre_filter_posts() {
+	local res="$1"
+	local urls
+	echo "@jq4 - parse-urls" >&2
+	posts=$(echo "$res" | \
+		jq -r '[.[] | select(.kind == "t3" and .data.is_self != true)]')
+	echo "$posts"
+}
+
 # for clean_urls and better indent consitency
 read -r -d '' PY_SOURCE <<'EOF'
 import youtube_dl
@@ -305,22 +314,32 @@ import sys
 import re
 res = [getattr(ie.__class__, '__dict__').get('_VALID_URL', None) \
 	for ie in youtube_dl.extractor.gen_extractors()]
-res = [re.compile(r) for r in res if r is not None and r is not '.*']
-res.pop()
+res = [re.compile(r) for r in res if r is not None and r != '.*']
 for url in sys.stdin:
 	for pattern in res:
 		if re.match(pattern, url):
-			print(url)
+			print(1,end='')
 			break
+	else:
+		print(0,end='')
 EOF
-clean_urls() {
+
+filter_posts() {
 	# remove all urls that do not conform to youtube-dl regexes
 	local urls
+	local urlv
+	local posts="$1"
 	if [ "$A_SKIP_REGEX" = 1 ]; then
-		echo "" | python -c "$PY_SOURCE"
-		urls=$(echo "$1" | python -c  "$PY_SOURCE")
-		echo "$urls"
+		# small amount of magic here
+		# the python program reads urls and prints "1" if good, "0" otherwise
+		# then with jq we get the indices of all the "1"s and use them
+		# as indices of the "posts" array to construct an array of "good" posts
+		urls=$(parse_urls "$posts")
+		urlv=$(echo "$urls" | python -c  "$PY_SOURCE")
+		posts=$(echo "$posts" | jq --arg urlv "$urlv" \
+			'. as $p | [$urlv | indices("1")[] | $p[.]]')
 	fi
+	echo "$posts"
 }
 
 get_all() {
@@ -329,8 +348,10 @@ get_all() {
 	local got_urls
 	local got_urls
 	got_posts=$(get_post_list "$1")
+	got_posts=$(pre_filter_posts "$got_posts")
+	got_posts=$(filter_posts "$got_posts")
 	got_urls=$(parse_urls "$got_posts")
-	got_urls=$(clean_urls "$got_urls")
+
 	echo "$got_urls"
 }
 
