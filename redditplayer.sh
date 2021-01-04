@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -Eeuo pipefail
+
 # authentication settings
 TOKENFILE=token.sh
 source cred.sh
@@ -7,30 +9,32 @@ source cred.sh
 # API settings
 USER_AGENT="cli-player/0.1 by pinusb"
 URL="https://oauth.reddit.com"
+TOKEN_URL="https://www.reddit.com"
 
-read -r -d '' HELP <<'EOF'
+read -r -d '' HELP <<EOF || true
 reddit-cli-player - A reddit-sourced music player for your command line
 
 Usage:  reddit-cli-player [options]
 
 Options:
 EOF
-read -r -d '' OPTIONS <<'EOF'
-	-p, --player <string>	command to run as player. Default "mpv --no-video"
-	-s, --subreddits <string>	comma-separated list of subreddits to source
-	-f, --files <string>	comma-separated list of filenames from which to read a list of subreddits
-	--hot	sort by hot posts (default)
-	--new	sort by new posts
-	--top	sort by top posts
-	--top-time <string>	one of "all", "week", "month", "year". Use with "--top"
-	--order <string>`	order of generated playlist: one of "random", "upvotes", "normalized", "time"
-	-c, --categories <string>	comma-separated list of categories to source
-	--list-categories	print a list of available categories and exit
-	--list-subreddits	print a list of available subreddits and exit
-	--no-skip-regex	try playing all urls, even the ones not recognized by youtube-dl
-	--fast-inexact-load	don't wait until all subreddits are scraped to start playing
+read -r -d '' OPTIONS <<EOF || true
+-p, --player <string>	command to run as player. Default "mpv --no-video"
+-s, --subreddits <string>	comma-separated list of subreddits to source
+-f, --files <string>	comma-separated list of filenames from which to read a list of subreddits
+--hot	sort by hot posts (default)
+--new	sort by new posts
+--top	sort by top posts
+--top-time <string>	one of "all", "week", "month", "year". Use with "--top"
+--order <string>	order of generated playlist: one of "random", "upvotes", "normalized", "time"
+-c, --categories <string>	comma-separated list of categories to source
+--list-categories	print a list of available categories and exit
+--list-subreddits	print a list of available subreddits and exit
+--no-skip-regex	try playing all urls, even the ones not recognized by youtube-dl
+--fast-inexact-load	don't wait until all subreddits are scraped to start playing
 EOF
-read -r -d '' MAN <<'EOF'
+
+read -r -d '' MAN <<EOF || true
 EOF
 
 #============================== PARSE PARAMETERS ===============================
@@ -42,6 +46,13 @@ A_TOP_TIME="upvotes"
 
 
 PARAMS=""
+READ_FILES=""
+SUBREDDITS=""
+CATEGORIES=""
+A_SKIP_REGEX=""
+A_LIST_CATEGORIES=""
+A_LIST_SUBREDDITS=""
+A_FAST_LOAD=""
 while (( "$#" )); do
 	case "$1" in
 		-h|--help)
@@ -147,7 +158,7 @@ if [ -n "$CATEGORIES" ]; then
 	echo "@jq1" >&2
 	names=$(< subreddits.json jq -r '.[] | 
 		select(.category | inside("'"$CATEGORIES"'")) | .name')
-	IFS=$'\n' arr=($names)
+	IFS=',' read -r -a arr <<<"$names"
 	IFS=' '
 	subreddits+=( "${arr[@]}" )
 	unset arr
@@ -198,20 +209,19 @@ req() {
 }
 
 auth() {
-	if [ -e token.sh ]; then
-		token=$(cat token.sh)
+	if [ -e "$TOKENFILE" ] && [ -n "$(cat "$TOKENFILE")" ]; then
+		token=$(cat "$TOKENFILE")
 	else
 
 		# first we get auth token
-	local tokenres
+		local tokenres
 		tokenres=$(curl -A "$USER_AGENT" \
 			-X POST -d "grant_type=password&username=$USERNAME&password=$PASSWORD" \
 			--user "$CLIENT_ID:$CLIENT_SECRET" \
-			"$URL/api/v1/access_token")
+			"$TOKEN_URL/api/v1/access_token/")
 
-	echo "@jq2 - token" >&2
+		echo "@jq2 - token" >&2
 		token=$(echo "$tokenres" | jq -r ".access_token")
-
 		echo "$token" > "$TOKENFILE"
 	fi 
 	auth_string="Authorization: bearer $token"
@@ -230,7 +240,7 @@ get_res() {
 	local args="$3"
 	local res
 	res=$(req "/r/$subreddit/${sort_by}.json?$args")
-	echo "@jq3 - get-res" >&2
+	echo  "@jq3 - get-res" >&2
 	echo "$res" | jq '.data.children[]'
 }
 export -f req # for xargs
@@ -258,7 +268,8 @@ get_post_list() {
 	echo Scraping \"{}\" >&2
 	{
 		flock -x 99
-		get_res \"{}\" $A_LIST_TYPE $args
+		n=\$(echo \"{}\" | tr -d '\\n' ) 
+		get_res \"\$n\" $A_LIST_TYPE $args
 	} 99>$lockfile
 	"
 	local res
@@ -272,6 +283,7 @@ get_post_list() {
 
 	# order by score
 	echo "@jq5 - parse-post-list" >&2
+	sort_key=""
 	case "$A_ORDER" in
 		score)
 			sort_key=".data.score"
@@ -308,7 +320,7 @@ pre_filter_posts() {
 }
 
 # for clean_urls and better indent consitency
-read -r -d '' PY_SOURCE <<'EOF'
+read -r -d '' PY_SOURCE <<'EOF' || true
 import youtube_dl
 import sys
 import re
@@ -346,7 +358,6 @@ get_posts() {
 	# wrapper around get_post_list, parse_urls, and clean_urls
 	local got_posts
 	local got_urls
-	local got_urls
 	got_posts=$(get_post_list "$1")
 	got_posts=$(pre_filter_posts "$got_posts")
 	got_posts=$(filter_posts "$got_posts")
@@ -361,9 +372,10 @@ make_playlist() {
 }
 
 start_player() {
+	args=""
 	case "$PLAYER" in
 		mpv*)
-			# args="--no-video"
+			args="--no-video"
 			[ -n "$A_FAST_LOAD" ] && args="--input-file=$IPC_FILE"
 			;;
 		vlc*)
@@ -378,7 +390,8 @@ start_player() {
 		*)
 			;;
 	esac
-	$PLAYER $args "$1" >/dev/null 2>&1 &
+	# $PLAYER $args "$1" >/dev/null 2>&1 &
+	$PLAYER $args "$1" &
 } 
 
 echo "PLAYLIST FILE: $PLAYLIST_FILE"
